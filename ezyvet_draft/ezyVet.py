@@ -58,7 +58,7 @@ def tool_calling_llm(state: MessagesState):
 # Build graph
 builder = StateGraph(MessagesState)
 builder.add_node("tool_calling_llm", tool_calling_llm)
-builder.add_node("sql_tool", ToolNode([sql]))
+builder.add_node("tools", ToolNode([sql]))
 builder.add_edge(START, "tool_calling_llm")
 builder.add_conditional_edges(
     "tool_calling_llm",
@@ -66,7 +66,7 @@ builder.add_conditional_edges(
     # If the latest message (result) from assistant is a not a tool call -> tools_condition routes to END
     tools_condition,
 )
-builder.add_edge("sql_tool", "tool_calling_llm") 
+builder.add_edge("tools", "tool_calling_llm") 
 
 # Compile graph
 graph = builder.compile()
