@@ -3,6 +3,7 @@ from langchain_openai import ChatOpenAI # TODO change to claude
 from langgraph.graph import MessagesState
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
+from langchain_core.messages import SystemMessage
 from dotenv import load_dotenv
 import os
 
@@ -15,6 +16,10 @@ it should go back to the agentic node that decides what to do next.
     So we are going to add a new node which is guard, and add an edge from sql to guard, guard to tool calling node.
 
 """
+
+# System message
+sys_msg = SystemMessage(content="")
+
 
 
 # Tool
@@ -48,7 +53,7 @@ llm_with_tools = llm.bind_tools([sql, graphs]) #Note guard is not given here, th
 
 # Node
 def tool_calling_llm(state: MessagesState):
-    return {"messages": [llm_with_tools.invoke(state["messages"])]}
+    return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}
 
 # Build graph
 builder = StateGraph(MessagesState)
