@@ -13,10 +13,13 @@ load_dotenv()  # Loads variables from .env
 
 # TODO
 """
-I want to see if I can have sql as a tool call, then it just has to go through the guard next. regardless of whether it passes or fails
-it should go back to the agentic node that decides what to do next. 
-    So we are going to add a new node which is guard, and add an edge from sql to guard, guard to tool calling node.
-
+Now we want to work with chat history message and stuff. but tbh maybe that's a later change?
+ -- We want to implement permanent state. 
+ -- We will keep the message history there. 
+ -- We will add a node before END which if message history is > 20, we will summarise the oldest 15, keep that as summary, add 5, add current. 
+ 
+If we get to end then can we just output that to whatever is currently done?
+Later: if desired, we can limit the number of calls to a specific tool through state. 
 """
 
 # System message
