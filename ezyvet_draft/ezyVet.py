@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from typing import Literal
 from langgraph.graph import END
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, SystemMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, RemoveMessage, ToolMessage, AIMessage
 import os
 
 load_dotenv()  # Loads variables from .env
@@ -27,6 +27,11 @@ Later: if desired, we can limit the number of calls to a specific tool through s
 # State class to store messages and summary
 class State(MessagesState):
     summary: str
+    llm_calls: int  # per-turn counter; reset to 0 on every `ask` (see below)
+
+# Hard ceiling on LLM calls in a single turn. Once reached, the graph stops
+# looping and returns whatever partial text it has (or a generic message).
+MAX_LLM_CALLS = 5
 
 # System message
 system_prompt = SystemMessage(content="")
@@ -37,7 +42,9 @@ config = {"configurable" : {"thread_id": "1"}} # the thread id should be based o
 # Ask
 def ask(user_input, graph, config):
     input_message = [HumanMessage(content = user_input)]
-    response = graph.invoke({"messages": input_message}, config)
+    # llm_calls persists in the checkpointer, so reset it to 0 for each new
+    # turn — otherwise turn 2 would start already at the cap and bail out.
+    response = graph.invoke({"messages": input_message, "llm_calls": 0}, config)
     return response
 
 def summarize_conversation(state: State):
@@ -100,6 +107,11 @@ def route_tools(state):
     if not last_message.tool_calls:          # AI produced a plain answer
         return "summarize_conversation"
 
+    # The AI wants another tool, but we've spent our LLM-call budget — bail out
+    # gracefully instead of looping back into tool_calling_llm forever.
+    if state.get("llm_calls", 0) >= MAX_LLM_CALLS:
+        return "max_calls_fallback"
+
     tool_called = last_message.tool_calls[0]["name"]
     if tool_called == "sql":
         return "sql"
@@ -121,7 +133,10 @@ def tool_calling_llm(state: State):
         summary_message = []
 
     messages = [system_prompt] + summary_message + state["messages"]
-    return {"messages": [llm_with_tools.invoke(messages)]}
+    return {
+        "messages": [llm_with_tools.invoke(messages)],
+        "llm_calls": state.get("llm_calls", 0) + 1,
+    }
 
 # Node - feed a tool_result back for an invalid tool call, then loop to the llm
 def invalid_tool_feedback(state: State):
@@ -131,6 +146,38 @@ def invalid_tool_feedback(state: State):
         tool_call_id = tool_call["id"],
     )
     return {"messages": [feedback]}
+
+# Node - reached MAX_LLM_CALLS. Return partial text (or a generic message) and
+# stop. The last AI message still has unanswered tool_calls, so we must feed a
+# ToolMessage back for each one — otherwise the dangling tool_use would make the
+# message history invalid the next time it's sent to Anthropic.
+FALLBACK_MESSAGE = (
+    "Sorry — I couldn't complete that within the allowed number of steps. "
+    "Please try rephrasing your request or breaking it into smaller parts."
+)
+
+def max_calls_fallback(state: State):
+    last = state["messages"][-1]
+
+    # Any text the model produced alongside its tool call. Anthropic responses
+    # can be a plain string or a list of content blocks, so handle both.
+    content = last.content
+    if isinstance(content, list):
+        content = " ".join(
+            block.get("text", "") for block in content if isinstance(block, dict)
+        )
+    partial = (content or "").strip()
+
+    # Satisfy every pending tool call so the history stays valid next turn.
+    tool_msgs = [
+        ToolMessage(
+            content="Skipped: reached the maximum number of steps.",
+            tool_call_id=tc["id"],
+        )
+        for tc in (last.tool_calls or [])
+    ]
+
+    return {"messages": tool_msgs + [AIMessage(content=partial or FALLBACK_MESSAGE)]}
 
 
 # Memory - checkpointer (Postgres).
@@ -151,6 +198,7 @@ builder.add_node("graph_tool", ToolNode([graphs]))  # NOT "graph" — reserved M
 builder.add_node("guard", guard)
 builder.add_node("invalid_tool_feedback", invalid_tool_feedback)
 builder.add_node("summarize_conversation", summarize_conversation)
+builder.add_node("max_calls_fallback", max_calls_fallback)
 
 builder.add_edge(START, "tool_calling_llm")
 builder.add_conditional_edges(
@@ -160,13 +208,17 @@ builder.add_conditional_edges(
     # targets AND draw the conditional branches in the graph image.
     {"sql": "sql", "graph_tool": "graph_tool",
      "invalid_tool_feedback": "invalid_tool_feedback",
-     "summarize_conversation": "summarize_conversation"},
+     "summarize_conversation": "summarize_conversation",
+     "max_calls_fallback": "max_calls_fallback"},
 )
 builder.add_edge("sql", "guard")
 builder.add_edge("guard", "tool_calling_llm")
 builder.add_edge("graph_tool", "tool_calling_llm")
 builder.add_edge("invalid_tool_feedback", "tool_calling_llm")
 builder.add_edge("summarize_conversation", END)
+# Straight to END (not via summarize) — we're out of budget, so don't spend
+# another LLM call summarizing.
+builder.add_edge("max_calls_fallback", END)
 
 # ---------------------------------------------------------------------------
 # Everything below runs ONLY when executing this file directly
