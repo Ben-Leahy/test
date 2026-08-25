@@ -1,51 +1,115 @@
-from IPython.display import Image, display
-# from langchain.chat_models import init_chat_model
-from langchain_anthropic import ChatAnthropic
-from langgraph.graph import MessagesState
-from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode, tools_condition
-from langchain_core.messages import SystemMessage
-from dotenv import load_dotenv
-from typing import Literal
-from langgraph.graph import END
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, SystemMessage, RemoveMessage, ToolMessage, AIMessage
 import os
 
-load_dotenv()  # Loads variables from .env
+from dotenv import load_dotenv
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from langgraph.graph import MessagesState, StateGraph, START, END
+from langgraph.prebuilt import ToolNode
 
 # TODO
 """
-Now we want to work with chat history message and stuff. but tbh maybe that's a later change?
- -- We want persistent state
- -- We want external persistence state
- -- We will add a node before END which if message history is > 20, we will summarise the oldest 15, keep that as summary, add 5, add current.
-
-If we get to end then can we just output that to whatever is currently done?
-Later: if desired, we can limit the number of calls to a specific tool through state.
+Update the comments. 
 """
-# State class to store messages and summary
-class State(MessagesState):
-    summary: str
-    llm_calls: int  # per-turn counter; reset to 0 on every `ask` (see below)
+
+# =============================================================================
+# CONFIGURATION & CONSTANTS
+# =============================================================================
+load_dotenv()  # Loads variables from .env
 
 # Hard ceiling on LLM calls in a single turn. Once reached, the graph stops
 # looping and returns whatever partial text it has (or a generic message).
 MAX_LLM_CALLS = 5
 
 # System message
-system_prompt = SystemMessage(content="")
+SYSTEM_PROMPT = SystemMessage(content="")
 
-config = {"configurable" : {"thread_id": "1"}} # the thread id should be based on user. Ie, A thread id is only accessible by a single user,
-#and when a user has multiple conversations as there is the ui for in Chat page, then that corresponds to multiple threads.
+# the thread id should be based on user. Ie, A thread id is only accessible by a
+# single user, and when a user has multiple conversations as there is the ui for
+# in Chat page, then that corresponds to multiple threads.
+CONFIG = {"configurable": {"thread_id": "1"}}
 
-# Ask
-def ask(user_input, graph, config):
-    input_message = [HumanMessage(content = user_input)]
-    # llm_calls persists in the checkpointer, so reset it to 0 for each new
-    # turn — otherwise turn 2 would start already at the cap and bail out.
-    response = graph.invoke({"messages": input_message, "llm_calls": 0}, config)
-    return response
+# Postgres connection string for the checkpointer. The connection itself is
+# opened only when this file is run directly (see the __main__ guard at the
+# bottom), so importing this module — e.g. from draw_graph.py to render the
+# graph — never opens a DB connection.
+DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+
+# Text returned when we hit MAX_LLM_CALLS and have no partial answer to show.
+FALLBACK_MESSAGE = (
+    "Sorry — I couldn't complete that within the allowed number of steps. "
+    "Please try rephrasing your request or breaking it into smaller parts."
+)
+
+# =============================================================================
+# STATE
+# =============================================================================
+# State class to store messages and summary
+class State(MessagesState):
+    summary: str
+    llm_calls: int  # per-turn counter; reset to 0 on every `ask` (see below)
+
+# =============================================================================
+# TOOLS
+# =============================================================================
+def sql(a: int) -> int:
+    """Runs sql
+
+    Args:
+        a: sql
+    """
+    return a
+
+def graphs(a: int) -> int:
+    """Runs graph
+
+    Args:
+        a: graph
+    """
+    return a
+
+def guard(a: int) -> int:
+    """Runs guard
+
+    Args:
+        a: guard
+    """
+    return a
+
+# =============================================================================
+# CONNECTIONS (LLM & DATABASE)
+# =============================================================================
+# LLM with bound tools. Note `guard` is not given here; it is run automatically
+# after `sql` (see the graph edges below).
+llm = ChatAnthropic(model="claude-haiku-4-5", api_key=os.getenv("ANTHROPIC_API_KEY"))
+llm_with_tools = llm.bind_tools([sql, graphs])
+
+# Memory - store
+# This can be used if we want to save things like user preferences of accumulated
+# knowledge. This is for memory that lives for a user, independently of the thread id.
+# (The Postgres checkpointer connection is opened in the __main__ guard below.)
+
+# =============================================================================
+# NODES
+# =============================================================================
+# Node
+def tool_calling_llm(state: State):
+    summary = state.get("summary", "")
+    if summary:
+        summary_message = [SystemMessage(content=f"Summary of conversation earlier: {summary}")]
+    else:
+        summary_message = []
+
+    messages = [SYSTEM_PROMPT] + summary_message + state["messages"]
+    return {
+        "messages": [llm_with_tools.invoke(messages)],
+        "llm_calls": state.get("llm_calls", 0) + 1,
+    }
 
 def summarize_conversation(state: State):
 
@@ -77,73 +141,12 @@ def summarize_conversation(state: State):
     delete_messages = [RemoveMessage(id=m.id) for m in state["messages"][:-5]]
     return {"summary": response.content, "messages": delete_messages}
 
-# Tools
-def sql(a: int) -> int:
-    """Runs sql
-
-    Args:
-        a: sql
-    """
-    return a
-
-def guard(a: int) -> int:
-    """Runs guard
-
-    Args:
-        a: guard
-    """
-    return a
-
-def graphs(a: int) -> int:
-    """Runs graph
-
-    Args:
-        a: graph
-    """
-    return a
-
-def route_tools(state):
-    last_message = state["messages"][-1]
-    if not last_message.tool_calls:          # AI produced a plain answer
-        return "summarize_conversation"
-
-    # The AI wants another tool, but we've spent our LLM-call budget — bail out
-    # gracefully instead of looping back into tool_calling_llm forever.
-    if state.get("llm_calls", 0) >= MAX_LLM_CALLS:
-        return "max_calls_fallback"
-
-    tool_called = last_message.tool_calls[0]["name"]
-    if tool_called == "sql":
-        return "sql"
-    elif tool_called == "graphs":            # the tool is named `graphs`...
-        return "graph_tool"                  # ...but its node is `graph_tool`
-    else: #tool returned was not valid.
-        return "invalid_tool_feedback"
-
-# LLM with bound tool
-llm = ChatAnthropic(model="claude-haiku-4-5", api_key=os.getenv('ANTHROPIC_API_KEY'))
-llm_with_tools = llm.bind_tools([sql, graphs]) #Note guard is not given here, that is run automatically after sql
-
-# Node
-def tool_calling_llm(state: State):
-    summary = state.get("summary", "")
-    if summary:
-        summary_message = [SystemMessage(content = f"Summary of conversation earlier: {summary}")]
-    else:
-        summary_message = []
-
-    messages = [system_prompt] + summary_message + state["messages"]
-    return {
-        "messages": [llm_with_tools.invoke(messages)],
-        "llm_calls": state.get("llm_calls", 0) + 1,
-    }
-
 # Node - feed a tool_result back for an invalid tool call, then loop to the llm
 def invalid_tool_feedback(state: State):
     tool_call = state["messages"][-1].tool_calls[0]
     feedback = ToolMessage(
-        content = f"Invalid tool call: '{tool_call['name']}' is not an available tool. Available tools: sql, graphs.",
-        tool_call_id = tool_call["id"],
+        content=f"Invalid tool call: '{tool_call['name']}' is not an available tool. Available tools: sql, graphs.",
+        tool_call_id=tool_call["id"],
     )
     return {"messages": [feedback]}
 
@@ -151,11 +154,6 @@ def invalid_tool_feedback(state: State):
 # stop. The last AI message still has unanswered tool_calls, so we must feed a
 # ToolMessage back for each one — otherwise the dangling tool_use would make the
 # message history invalid the next time it's sent to Anthropic.
-FALLBACK_MESSAGE = (
-    "Sorry — I couldn't complete that within the allowed number of steps. "
-    "Please try rephrasing your request or breaking it into smaller parts."
-)
-
 def max_calls_fallback(state: State):
     last = state["messages"][-1]
 
@@ -179,18 +177,30 @@ def max_calls_fallback(state: State):
 
     return {"messages": tool_msgs + [AIMessage(content=partial or FALLBACK_MESSAGE)]}
 
+# =============================================================================
+# ROUTING
+# =============================================================================
+def route_tools(state):
+    last_message = state["messages"][-1]
+    if not last_message.tool_calls:          # AI produced a plain answer
+        return "summarize_conversation"
 
-# Memory - checkpointer (Postgres).
-# The connection is opened only when this file is run directly (see the
-# __main__ guard at the bottom), so importing this module — e.g. from
-# draw_graph.py to render the graph — never opens a DB connection.
-db_uri = "postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+    # The AI wants another tool, but we've spent our LLM-call budget — bail out
+    # gracefully instead of looping back into tool_calling_llm forever.
+    if state.get("llm_calls", 0) >= MAX_LLM_CALLS:
+        return "max_calls_fallback"
 
-# Memory - store
-# This can be used if we want to save things like user preferences of accumulated knowledge.
-# This is for memory lives for a user, independently of the thread id.
+    tool_called = last_message.tool_calls[0]["name"]
+    if tool_called == "sql":
+        return "sql"
+    elif tool_called == "graphs":            # the tool is named `graphs`...
+        return "graph_tool"                  # ...but its node is `graph_tool`
+    else: #tool returned was not valid.
+        return "invalid_tool_feedback"
 
-# Build graph
+# =============================================================================
+# GRAPH CONSTRUCTION
+# =============================================================================
 builder = StateGraph(State)
 builder.add_node("tool_calling_llm", tool_calling_llm)
 builder.add_node("sql", ToolNode([sql]))
@@ -220,24 +230,35 @@ builder.add_edge("summarize_conversation", END)
 # another LLM call summarizing.
 builder.add_edge("max_calls_fallback", END)
 
-# ---------------------------------------------------------------------------
+# =============================================================================
+# PUBLIC API
+# =============================================================================
+def ask(user_input, graph, config):
+    input_message = [HumanMessage(content=user_input)]
+    # llm_calls persists in the checkpointer, so reset it to 0 for each new
+    # turn — otherwise turn 2 would start already at the cap and bail out.
+    response = graph.invoke({"messages": input_message, "llm_calls": 0}, config)
+    return response
+
+# =============================================================================
+# MAIN ENTRYPOINT
+# =============================================================================
 # Everything below runs ONLY when executing this file directly
 # (`python ezyVet.py`). It opens the Postgres connection and compiles the
 # graph with the checkpointer. Importing this module (e.g. from draw_graph.py)
 # skips all of it, so no DB connection is needed just to draw the graph.
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     from langgraph.checkpoint.postgres import PostgresSaver  # separate install from base langgraph
 
     # connect to the postgres db + create checkpoint tables
-    memory = PostgresSaver.from_conn_string(db_uri).__enter__()
+    memory = PostgresSaver.from_conn_string(DB_URI).__enter__()
     memory.setup()
 
     # Compile graph with the persistent checkpointer
     graph = builder.compile(checkpointer=memory)
 
     # Example usage: drive one turn of the graph with a user's message.
-    # response = ask("what should I focus on first?", graph, config)
+    # response = ask("what should I focus on first?", graph, CONFIG)
 
     # save image of graph (best-effort — never let drawing crash the app).
     try:
