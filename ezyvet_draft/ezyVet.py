@@ -133,14 +133,11 @@ def invalid_tool_feedback(state: State):
     return {"messages": [feedback]}
 
 
-# Memory - checkpointer
-# Edit this so that it works with postgres instead.
-from langgraph.checkpoint.postgres import PostgresSaver # this is a separate install to the basic langgraph so needs to be in requirements
-# Here is our checkpointer
-# connect to the postgres db
+# Memory - checkpointer (Postgres).
+# The connection is opened only when this file is run directly (see the
+# __main__ guard at the bottom), so importing this module — e.g. from
+# draw_graph.py to render the graph — never opens a DB connection.
 db_uri = "postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable"
-memory = PostgresSaver.from_conn_string(db_uri).__enter__()
-memory.setup()
 
 # Memory - store
 # This can be used if we want to save things like user preferences of accumulated knowledge.
@@ -171,19 +168,31 @@ builder.add_edge("graph_tool", "tool_calling_llm")
 builder.add_edge("invalid_tool_feedback", "tool_calling_llm")
 builder.add_edge("summarize_conversation", END)
 
-# Compile graph
-graph = builder.compile(checkpointer = memory)
+# ---------------------------------------------------------------------------
+# Everything below runs ONLY when executing this file directly
+# (`python ezyVet.py`). It opens the Postgres connection and compiles the
+# graph with the checkpointer. Importing this module (e.g. from draw_graph.py)
+# skips all of it, so no DB connection is needed just to draw the graph.
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    from langgraph.checkpoint.postgres import PostgresSaver  # separate install from base langgraph
 
-# Example usage: drive one turn of the graph with a user's message.
-# response = ask("what should I focus on first?", graph, config)
+    # connect to the postgres db + create checkpoint tables
+    memory = PostgresSaver.from_conn_string(db_uri).__enter__()
+    memory.setup()
 
+    # Compile graph with the persistent checkpointer
+    graph = builder.compile(checkpointer=memory)
 
-# save image of graph (best-effort — never let drawing crash the app).
-try:
-    png_bytes = graph.get_graph().draw_mermaid_png(max_retries=5, retry_delay=2.0)
-    with open("graph.png", "wb") as f:
-        f.write(png_bytes)
-    print("Wrote graph.png")
-except Exception as e:
-    print(f"Could not render graph PNG ({e}); mermaid source below:\n")
-    print(graph.get_graph().draw_mermaid())
+    # Example usage: drive one turn of the graph with a user's message.
+    # response = ask("what should I focus on first?", graph, config)
+
+    # save image of graph (best-effort — never let drawing crash the app).
+    try:
+        png_bytes = graph.get_graph().draw_mermaid_png(max_retries=5, retry_delay=2.0)
+        with open("graph.png", "wb") as f:
+            f.write(png_bytes)
+        print("Wrote graph.png")
+    except Exception as e:
+        print(f"Could not render graph PNG ({e}); mermaid source below:\n")
+        print(graph.get_graph().draw_mermaid())
