@@ -7,6 +7,8 @@ from langchain_core.messages import SystemMessage
 from dotenv import load_dotenv
 from typing import Literal
 from langgraph.graph import END
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.messages import HumanMessage, SystemMessage
 import os
 
 load_dotenv()  # Loads variables from .env
@@ -17,7 +19,7 @@ Now we want to work with chat history message and stuff. but tbh maybe that's a 
  -- We want to implement permanent state. 
  -- We will keep the message history there. 
  -- We will add a node before END which if message history is > 20, we will summarise the oldest 15, keep that as summary, add 5, add current. 
- 
+
 If we get to end then can we just output that to whatever is currently done?
 Later: if desired, we can limit the number of calls to a specific tool through state. 
 """
@@ -69,6 +71,9 @@ def route_tools(state):
 llm = ChatOpenAI(model="gpt-4o", api_key=os.getenv('OPENAI_API_KEY')) # TODO change to claude
 llm_with_tools = llm.bind_tools([sql, graphs]) #Note guard is not given here, that is run automatically after sql
 
+# Memory
+memory = MemorySaver()
+
 # Node
 def tool_calling_llm(state: MessagesState):
     return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}
@@ -95,7 +100,15 @@ builder.add_edge("guard", "tool_calling_llm")
 builder.add_edge("graph_tool", "tool_calling_llm")
 
 # Compile graph
-graph = builder.compile()
+graph = builder.compile(checkpointer = memory)
+
+# To invoke the graph when a user asks a question:
+config = {"configurable" : {"thread_id": "1"}} # the thread id should be based on user. Ie, A thread id is only accessible by a single user, 
+#and when a user has multiple conversations as there is the ui for in Chat page, then that corresponds to multiple threads.
+user_input = ""
+input_message = [HumanMessage(content = user_input)]
+messages = sys_msg + input_message
+graph.invoke(messages, config)
 
 # save image of graph (best-effort — never let drawing crash the app).
 try:
