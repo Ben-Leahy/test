@@ -16,8 +16,8 @@ load_dotenv()  # Loads variables from .env
 # TODO
 """
 Now we want to work with chat history message and stuff. but tbh maybe that's a later change?
- -- We want to implement permanent state. 
- -- We will keep the message history there. 
+ -- We want persistent state
+ -- We want external persistence state
  -- We will add a node before END which if message history is > 20, we will summarise the oldest 15, keep that as summary, add 5, add current. 
 
 If we get to end then can we just output that to whatever is currently done?
