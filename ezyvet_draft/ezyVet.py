@@ -71,12 +71,20 @@ def route_tools(state):
 llm = ChatOpenAI(model="gpt-4o", api_key=os.getenv('OPENAI_API_KEY')) # TODO change to claude
 llm_with_tools = llm.bind_tools([sql, graphs]) #Note guard is not given here, that is run automatically after sql
 
-# Memory
-memory = MemorySaver()
-
 # Node
 def tool_calling_llm(state: MessagesState):
     return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}
+
+# Memory
+# Edit this so that it works with postgres instead. 
+import sqlite3
+from langgraph.checkpoint.sqlite import SqliteSaver
+# Here is our checkpointer 
+# pull file if it doesn't exist and connect to local db
+# !mkdir -p state_db && [ ! -f state_db/example.db ] && wget -P state_db https://github.com/langchain-ai/langchain-academy/raw/main/module-2/state_db/example.db
+db_path = "state_db/example.db"
+conn = sqlite3.connect(db_path, check_same_thread=False)
+memory = SqliteSaver(conn)
 
 # Build graph
 builder = StateGraph(MessagesState)
@@ -84,8 +92,6 @@ builder.add_node("tool_calling_llm", tool_calling_llm)
 builder.add_node("sql", ToolNode([sql]))
 builder.add_node("graph_tool", ToolNode([graphs]))  # NOT "graph" — reserved Mermaid keyword
 builder.add_node("guard", guard)
-
-
 
 builder.add_edge(START, "tool_calling_llm")
 builder.add_conditional_edges(
