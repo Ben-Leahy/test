@@ -1,5 +1,6 @@
 from IPython.display import Image, display
-from langchain_openai import ChatOpenAI # TODO change to claude
+# from langchain.chat_models import init_chat_model
+from langchain_anthropic import ChatAnthropic
 from langgraph.graph import MessagesState
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -44,7 +45,7 @@ def ask(state: State, graph, config):
         response = model.invoke(messages)
 
 
-def summarize_conversation(state: State):
+def summarize_conversation(state: State, model):
     
     # First get the summary if it exists
     summary = state.get("summary", "")
@@ -113,7 +114,7 @@ def route_tools(state):
         return END
 
 # LLM with bound tool
-llm = ChatOpenAI(model="gpt-4o", api_key=os.getenv('OPENAI_API_KEY')) # TODO change to claude
+llm = ChatAnthropic(model="claude-haiku-4-5", api_key=os.getenv('ANTHROPIC_API_KEY'))
 llm_with_tools = llm.bind_tools([sql, graphs]) #Note guard is not given here, that is run automatically after sql
 
 # Node
