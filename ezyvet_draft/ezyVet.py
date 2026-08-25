@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from typing import Literal
 from langgraph.graph import END
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, RemoveMessage
 import os
 
 load_dotenv()  # Loads variables from .env
@@ -23,13 +23,58 @@ Now we want to work with chat history message and stuff. but tbh maybe that's a 
 If we get to end then can we just output that to whatever is currently done?
 Later: if desired, we can limit the number of calls to a specific tool through state. 
 """
-
+# State class to store messages and summary
+class State(MessagesState):
+    summary: str
+    
 # System message
-sys_msg = SystemMessage(content="")
+system_prompt = SystemMessage(content="")
+
+config = {"configurable" : {"thread_id": "1"}} # the thread id should be based on user. Ie, A thread id is only accessible by a single user, 
+#and when a user has multiple conversations as there is the ui for in Chat page, then that corresponds to multiple threads.
+
+# Ask
+def ask(state: State, graph, config):
+    user_input = "" # Wire up to what recieves user input
+    input_message = [HumanMessage(content = user_input)]
+    summary = state.get("summary", "")
+    if summary:
+        summary_message = SystemMessage(content = f"Summary of conversation earlier: {summary}")
+        messages = [system_prompt] + [summary_message] + state["messages"] + input_message
+        response = model.invoke(messages)
 
 
+def summarize_conversation(state: State):
+    
+    # First get the summary if it exists
+    summary = state.get("summary", "")
 
-# Tool
+    # Create our summarization prompt 
+    if summary:
+        
+        # If a summary already exists, add it to the prompt
+        summary_message = (
+            f"This is summary of the conversation to date: {summary}\n\n"
+            "Extend the summary by taking into account the new messages above:"
+        )
+        
+    else:
+        # If no summary exists, just create a new one
+        summary_message = "Create a summary of the conversation above:"
+
+    # Add prompt to our history
+    messages = state["messages"] + [HumanMessage(content=summary_message)]
+    response = model.invoke(messages)
+    
+    # Delete all but the 2 most recent messages and add our summary to the state 
+    delete_messages = [RemoveMessage(id=m.id) for m in state["messages"][:-2]]
+    return {"summary": response.content, "messages": delete_messages}
+
+
+messages = system_prompt + input_message
+graph.invoke(messages, config)
+
+# Tools
 def sql(a: int) -> int:
     """Runs sql
 
@@ -73,7 +118,7 @@ llm_with_tools = llm.bind_tools([sql, graphs]) #Note guard is not given here, th
 
 # Node
 def tool_calling_llm(state: MessagesState):
-    return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}
+    return {"messages": [llm_with_tools.invoke([system_prompt] + state["messages"])]}
 
 # Memory - checkpointer
 # Edit this so that it works with postgres instead. 
@@ -110,13 +155,7 @@ builder.add_edge("graph_tool", "tool_calling_llm")
 # Compile graph
 graph = builder.compile(checkpointer = memory)
 
-# To invoke the graph when a user asks a question:
-config = {"configurable" : {"thread_id": "1"}} # the thread id should be based on user. Ie, A thread id is only accessible by a single user, 
-#and when a user has multiple conversations as there is the ui for in Chat page, then that corresponds to multiple threads.
-user_input = ""
-input_message = [HumanMessage(content = user_input)]
-messages = sys_msg + input_message
-graph.invoke(messages, config)
+
 
 # save image of graph (best-effort — never let drawing crash the app).
 try:
