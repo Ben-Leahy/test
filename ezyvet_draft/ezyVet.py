@@ -75,16 +75,18 @@ llm_with_tools = llm.bind_tools([sql, graphs]) #Note guard is not given here, th
 def tool_calling_llm(state: MessagesState):
     return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}
 
-# Memory
+# Memory - checkpointer
 # Edit this so that it works with postgres instead. 
-import sqlite3
-from langgraph.checkpoint.sqlite import SqliteSaver
-# Here is our checkpointer 
-# pull file if it doesn't exist and connect to local db
-# !mkdir -p state_db && [ ! -f state_db/example.db ] && wget -P state_db https://github.com/langchain-ai/langchain-academy/raw/main/module-2/state_db/example.db
-db_path = "state_db/example.db"
-conn = sqlite3.connect(db_path, check_same_thread=False)
-memory = SqliteSaver(conn)
+from langgraph.checkpoint.postgres import PostgresSaver # this is a separate install to the basic langgraph so needs to be in requirements
+# Here is our checkpointer
+# connect to the postgres db
+db_uri = "postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+memory = PostgresSaver.from_conn_string(db_uri).__enter__()
+memory.setup()
+
+# Memory - store
+# This can be used if we want to save things like user preferences of accumulated knowledge. 
+# This is for memory lives for a user, independently of the thread id. 
 
 # Build graph
 builder = StateGraph(MessagesState)
