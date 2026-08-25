@@ -12,15 +12,10 @@ from langchain_core.messages import (
 from langgraph.graph import MessagesState, StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 
-# TODO
-"""
-Update the comments. 
-"""
-
 # =============================================================================
 # CONFIGURATION & CONSTANTS
 # =============================================================================
-load_dotenv()  # Loads variables from .env
+load_dotenv()
 
 # Hard ceiling on LLM calls in a single turn. Once reached, the graph stops
 # looping and returns whatever partial text it has (or a generic message).
@@ -34,10 +29,8 @@ SYSTEM_PROMPT = SystemMessage(content="")
 # in Chat page, then that corresponds to multiple threads.
 CONFIG = {"configurable": {"thread_id": "1"}}
 
-# Postgres connection string for the checkpointer. The connection itself is
-# opened only when this file is run directly (see the __main__ guard at the
-# bottom), so importing this module — e.g. from draw_graph.py to render the
-# graph — never opens a DB connection.
+# Postgres connection string for the checkpointer. 
+# This should be adapted to a database within the same environment for the rest of the application
 DB_URI = "postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable"
 
 # Text returned when we hit MAX_LLM_CALLS and have no partial answer to show.
@@ -57,6 +50,7 @@ class State(MessagesState):
 # =============================================================================
 # TOOLS
 # =============================================================================
+# Map the current sql generation logic into here
 def sql(a: int) -> int:
     """Runs sql
 
@@ -65,6 +59,7 @@ def sql(a: int) -> int:
     """
     return a
 
+# Pick a graph library that can do histograms, bar charts and pie charts to help responses be visually effective
 def graphs(a: int) -> int:
     """Runs graph
 
@@ -73,6 +68,7 @@ def graphs(a: int) -> int:
     """
     return a
 
+# Map the existing guard logic into this function.
 def guard(a: int) -> int:
     """Runs guard
 
@@ -84,15 +80,14 @@ def guard(a: int) -> int:
 # =============================================================================
 # CONNECTIONS (LLM & DATABASE)
 # =============================================================================
-# LLM with bound tools. Note `guard` is not given here; it is run automatically
-# after `sql` (see the graph edges below).
+# Map the existing connection logic into the below line. Is the anthropic api key in .env?
 llm = ChatAnthropic(model="claude-haiku-4-5", api_key=os.getenv("ANTHROPIC_API_KEY"))
 llm_with_tools = llm.bind_tools([sql, graphs])
 
 # Memory - store
 # This can be used if we want to save things like user preferences of accumulated
 # knowledge. This is for memory that lives for a user, independently of the thread id.
-# (The Postgres checkpointer connection is opened in the __main__ guard below.)
+# This is not currently implemented, and has no current implementation plans.
 
 # =============================================================================
 # NODES
