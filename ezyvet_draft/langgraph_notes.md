@@ -80,6 +80,14 @@ Remote
 ------------------------------------------------------------------------
 Other notes:
 ------------------------------------------------------------------------
+## Double texting
+When the user sends a second message before waiting for the first.
+We can select different methods to cope with this through client.runs.create(multitask_strategy=)
+1. We can reject
+2. We can queue
+3. We can interrupt & preserve partial answer
+4. We can interrupt & rollback (don't keep)
+
 
 thread id - we use this for a chat. 
 Then we can associate multiple threads with a user id. 

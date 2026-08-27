@@ -1,5 +1,7 @@
 import os
 
+from typing import Any
+
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import (
@@ -9,7 +11,9 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import MessagesState, StateGraph, START, END
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 
 # =============================================================================
@@ -93,7 +97,7 @@ llm_with_tools = llm.bind_tools([sql, graphs])
 # NODES
 # =============================================================================
 # Node
-def tool_calling_llm(state: State):
+def tool_calling_llm(state: State) -> dict[str, Any]:
     summary = state.get("summary", "")
     if summary:
         summary_message = [SystemMessage(content=f"Summary of conversation earlier: {summary}")]
@@ -106,7 +110,7 @@ def tool_calling_llm(state: State):
         "llm_calls": state.get("llm_calls", 0) + 1,
     }
 
-def summarize_conversation(state: State):
+def summarize_conversation(state: State) -> dict[str, Any]:
 
     # Only reduce the history once it has grown large enough
     if len(state["messages"]) <= 15:
@@ -137,7 +141,7 @@ def summarize_conversation(state: State):
     return {"summary": response.content, "messages": delete_messages}
 
 # Node - feed a tool_result back for an invalid tool call, then loop to the llm
-def invalid_tool_feedback(state: State):
+def invalid_tool_feedback(state: State) -> dict[str, Any]:
     tool_call = state["messages"][-1].tool_calls[0]
     feedback = ToolMessage(
         content=f"Invalid tool call: '{tool_call['name']}' is not an available tool. Available tools: sql, graphs.",
@@ -149,7 +153,7 @@ def invalid_tool_feedback(state: State):
 # stop. The last AI message still has unanswered tool_calls, so we must feed a
 # ToolMessage back for each one — otherwise the dangling tool_use would make the
 # message history invalid the next time it's sent to Anthropic.
-def max_calls_fallback(state: State):
+def max_calls_fallback(state: State) -> dict[str, Any]:
     last = state["messages"][-1]
 
     # Any text the model produced alongside its tool call. Anthropic responses
@@ -175,7 +179,7 @@ def max_calls_fallback(state: State):
 # =============================================================================
 # ROUTING
 # =============================================================================
-def route_tools(state):
+def route_tools(state: State) -> str:
     last_message = state["messages"][-1]
     if not last_message.tool_calls:          # AI produced a plain answer
         return "summarize_conversation"
@@ -228,7 +232,7 @@ builder.add_edge("max_calls_fallback", END)
 # =============================================================================
 # PUBLIC API
 # =============================================================================
-def ask(user_input, graph, config):
+def ask(user_input: str, graph: CompiledStateGraph, config: RunnableConfig) -> dict[str, Any]:
     input_message = [HumanMessage(content=user_input)]
     # llm_calls persists in the checkpointer, so reset it to 0 for each new
     # turn — otherwise turn 2 would start already at the cap and bail out.
