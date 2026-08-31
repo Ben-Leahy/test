@@ -133,7 +133,7 @@ def summarize_conversation(state: State) -> dict[str, Any]:
         summary_message = "Create a summary of the conversation above:"
 
     # Add prompt to our history
-    messages = state["messages"] + [HumanMessage(content=summary_message)]
+    messages = state["messages"][:len(state["messages"] - 5)] + [HumanMessage(content=summary_message)]
     response = llm.invoke(messages)
 
     # Delete all but the 5 most recent messages and add our summary to the state
